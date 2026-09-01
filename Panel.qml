@@ -24,6 +24,10 @@ Panel {
   property string publicIpOutput: ""
   property string launchOutput: ""
   property string launchError: ""
+  property string resolveOutput: ""
+  property string resolveError: ""
+  property string requestedTarget: ""
+  property string requestedPort: ""
   property string disconnectOutput: ""
   property string disconnectError: ""
   property bool sshHostsExpanded: false
@@ -80,6 +84,7 @@ Panel {
   ]
 
   readonly property string scriptPath: (Quickshell.env("HOME") || "") + "/.config/omarchy/plugins/" + moduleName + "/sshuttledeck"
+  readonly property string rootHelperPath: "/usr/local/libexec/sshuttledeck-root"
   readonly property bool connected: state === "Connected"
   readonly property var currentPhrases: connected ? activePhrases : inactivePhrases
   readonly property string heroPhraseText: currentPhrases[phraseIndex % currentPhrases.length]
@@ -116,7 +121,7 @@ Panel {
       linkOutput = ""
       linkProcess.running = true
     }
-    if (!publicIpProcess.running) {
+    if (root.opened && !publicIpProcess.running) {
       publicIpOutput = ""
       publicIpProcess.running = true
     }
@@ -157,7 +162,7 @@ Panel {
       var payload = JSON.parse(raw)
       if (payload.success === false || !payload.ip) throw new Error("IP lookup failed")
       publicIp = String(payload.ip)
-      publicIsp = String((payload.connection && (payload.connection.isp || payload.connection.org)) || "")
+      publicIsp = String((payload.connection && (payload.connection.isp || payload.connection.org)) || "").substring(0, 120)
     } catch (error) {
       publicIp = raw !== "" && raw.length <= 64 ? raw : "Unavailable"
       publicIsp = ""
@@ -230,15 +235,14 @@ Panel {
       message = "Enter at least one route, such as 0/0."
       return
     }
-    if (launchProcess.running) return
-    message = "Requesting permission to start " + target + "..."
-    launchOutput = ""
-    launchError = ""
-    launchProcess.command = [
-      "pkexec", scriptPath, "root-start", Quickshell.env("SSH_AUTH_SOCK") || "", target, port.trim(), routes,
-      dnsCheck.checked ? "1" : "0", autoNetsCheck.checked ? "1" : "0"
-    ]
-    launchProcess.running = true
+    if (resolveProcess.running || launchProcess.running) return
+    requestedTarget = target.trim()
+    requestedPort = port.trim()
+    resolveOutput = ""
+    resolveError = ""
+    message = "Resolving SSH settings for " + requestedTarget + "..."
+    resolveProcess.command = [scriptPath, "resolve", requestedTarget, requestedPort]
+    resolveProcess.running = true
   }
 
   function disconnect() {
@@ -246,7 +250,7 @@ Panel {
     message = "Requesting permission to disconnect..."
     disconnectOutput = ""
     disconnectError = ""
-    disconnectProcess.command = ["pkexec", scriptPath, "root-stop", Quickshell.env("SSH_AUTH_SOCK") || ""]
+    disconnectProcess.command = ["pkexec", rootHelperPath, "stop"]
     disconnectProcess.running = true
   }
 
@@ -636,6 +640,7 @@ Panel {
             Text {
               Layout.fillWidth: true
               text: root.publicIp + (root.publicIsp !== "" ? "  |  " + root.publicIsp : "")
+              textFormat: Text.PlainText
               color: root.muted
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -861,6 +866,32 @@ Panel {
   }
 
   Process {
+    id: resolveProcess
+    command: []
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.resolveOutput = text }
+    stderr: StdioCollector { waitForEnd: true; onStreamFinished: root.resolveError = text }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        message = String(root.resolveError || root.resolveOutput || "Could not resolve SSH settings.").trim()
+        return
+      }
+      var fields = String(root.resolveOutput || "").trim().split("\t")
+      if (fields.length !== 4) {
+        message = "SSH settings returned an invalid connection plan."
+        return
+      }
+      launchOutput = ""
+      launchError = ""
+      message = "Requesting permission to start " + requestedTarget + "..."
+      launchProcess.command = [
+        "pkexec", rootHelperPath, "start", fields[0], fields[2], fields[1], fields[3], routesField.text.trim(),
+        dnsCheck.checked ? "1" : "0", autoNetsCheck.checked ? "1" : "0"
+      ]
+      launchProcess.running = true
+    }
+  }
+
+  Process {
     id: launchProcess
     command: []
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.launchOutput = text }
@@ -901,7 +932,7 @@ Panel {
 
   Timer {
     interval: 60000
-    running: true
+    running: root.opened
     repeat: true
     triggeredOnStart: true
     onTriggered: if (!publicIpProcess.running) publicIpProcess.running = true

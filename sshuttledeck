@@ -7,8 +7,7 @@ set_runtime_dir() {
   metafile="${runtime_dir}/target"
 }
 
-set_runtime_dir "${XDG_RUNTIME_DIR:-/run/user/$UID}/sshuttledeck"
-ssh_command=""
+set_runtime_dir "/run/sshuttledeck/$UID"
 
 die() {
   printf 'SSHuttleDeck: %s\n' "$*" >&2
@@ -17,25 +16,6 @@ die() {
 
 valid_port() {
   [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
-}
-
-remote_for() {
-  local target="$1" port="$2" user_prefix="" host
-  [[ -n "$port" ]] || { printf '%s\n' "$target"; return; }
-
-  host="$target"
-  if [[ "$target" == *@* ]]; then
-    user_prefix="${target%@*}@"
-    host="${target##*@}"
-  fi
-
-  if [[ "$host" == \[*\] ]]; then
-    printf '%s%s:%s\n' "$user_prefix" "$host" "$port"
-  elif [[ "$host" == *:* ]]; then
-    printf '%s[%s]:%s\n' "$user_prefix" "$host" "$port"
-  else
-    printf '%s%s:%s\n' "$user_prefix" "$host" "$port"
-  fi
 }
 
 read_ssh_config() {
@@ -92,122 +72,76 @@ public_ip() {
 }
 
 status() {
-  local pid target="" command=""
-  [[ -s "$pidfile" ]] || { printf 'disconnected\n'; return; }
-  read -r pid < "$pidfile" || true
+  local pid target="" command="" active_pidfile="$pidfile" active_metafile="$metafile"
+  # Preserve control of an existing tunnel while migrating it from the former
+  # user-runtime location to the hardened root-owned runtime directory.
+  if [[ ! -s "$active_pidfile" && -s "/run/user/$UID/sshuttledeck/sshuttle.pid" ]]; then
+    active_pidfile="/run/user/$UID/sshuttledeck/sshuttle.pid"
+    active_metafile="/run/user/$UID/sshuttledeck/target"
+  fi
+  [[ -s "$active_pidfile" ]] || { printf 'disconnected\n'; return; }
+  read -r pid < "$active_pidfile" || true
   # The daemon is root-owned after pkexec, so a regular user gets EPERM from
   # kill -0 even while it is healthy. Its command line is still observable.
   command="$(ps -p "$pid" -o args= 2>/dev/null || true)"
-  if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$command" == *sshuttle* ]] && [[ "$command" == *"--pidfile $pidfile"* ]]; then
-    [[ -r "$metafile" ]] && target="$(<"$metafile")"
+  if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$command" == *sshuttle* ]] && [[ "$command" == *"--pidfile $active_pidfile"* ]]; then
+    [[ -r "$active_metafile" ]] && target="$(<"$active_metafile")"
     printf 'connected\t%s\n' "$target"
   else
-    rm -f "$pidfile" "$metafile" 2>/dev/null || true
     printf 'disconnected\n'
   fi
 }
 
-start() {
-  local target="$1" port="$2" routes="$3" dns="$4" auto_nets="$5" remote pid
-  local -a args route_args
-
-  [[ -n "$target" && ! "$target" =~ [[:space:]] ]] || die "Enter a host, IP address, or SSH alias."
-  [[ -z "$port" ]] || valid_port "$port" || die "SSH port must be between 1 and 65535."
-  read -r -a route_args <<< "$routes"
-  (( ${#route_args[@]} > 0 )) || die "Enter at least one route, such as 0/0."
-  for route in "${route_args[@]}"; do [[ "$route" != -* ]] || die "Routes cannot be SSHuttle options."; done
-  command -v sshuttle >/dev/null || die "sshuttle is not installed. Run: omarchy pkg add sshuttle"
-
-  mkdir -p "$runtime_dir"
-  remote="$(remote_for "$target" "$port")"
-  args=(sshuttle --daemon --pidfile "$pidfile" --remote "$remote")
-  # OpenSSH chooses its per-user config from the effective UID, not $HOME.
-  # pkexec makes that UID root, so supply the requesting user's config file.
-  [[ -n "$ssh_command" ]] && args+=(--ssh-cmd "$ssh_command")
-  [[ "$dns" == "1" ]] && args+=(--dns)
-  [[ "$auto_nets" == "1" ]] && args+=(--auto-nets)
-
-  "${args[@]}" "${route_args[@]}"
-  # sshuttle --daemon exits before the remote connection is usable. Wait for
-  # its daemon PID so the panel never shows a tunnel that already died.
-  for _ in {1..10}; do
-    if [[ -s "$pidfile" ]]; then
-      read -r pid < "$pidfile" || true
-      if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-        printf '%s\n' "$remote" > "$metafile"
-        printf 'SSHuttleDeck connected through %s.\n' "$remote"
-        return
-      fi
-    fi
-    sleep 0.5
-  done
-  rm -f "$pidfile" "$metafile"
-  die "SSHuttle exited before the tunnel became ready."
+valid_host() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$1" =~ ^[0-9A-Fa-f:]+$ ]]
 }
 
-stop() {
-  local pid
-  [[ -s "$pidfile" ]] || { printf 'SSHuttleDeck is not connected.\n'; return; }
-  read -r pid < "$pidfile" || true
-  [[ "$pid" =~ ^[0-9]+$ ]] || die "The saved SSHuttle PID is invalid."
-  kill -TERM "$pid" 2>/dev/null || true
-  rm -f "$pidfile" "$metafile"
-  printf 'SSHuttleDeck disconnected.\n'
+valid_user() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_.-]{0,31}$ ]]
 }
 
-pkexec_context() {
-  local owner_uid="${PKEXEC_UID:-}" owner_name owner_home agent_socket="$1"
-  [[ $EUID -eq 0 ]] || die "This action must be authorized through pkexec."
-  [[ "$owner_uid" =~ ^[0-9]+$ ]] || die "pkexec did not provide the requesting user."
-  owner_name="$(id -nu "$owner_uid" 2>/dev/null)" || die "Unknown requesting user."
-  owner_home="$(getent passwd "$owner_uid" | cut -d: -f6)"
-  [[ -n "$owner_home" && -d "$owner_home" ]] || die "Could not resolve the requesting user's home directory."
-
-  set_runtime_dir "/run/user/${owner_uid}/sshuttledeck"
-  mkdir -p -m 755 "$runtime_dir"
-  export HOME="$owner_home" USER="$owner_name" LOGNAME="$owner_name"
-  if [[ -r "$owner_home/.ssh/config" ]]; then
-    ssh_command="ssh -F \"$owner_home/.ssh/config\""
-    # The shell is started without SSH_AUTH_SOCK. Explicitly offer the user's
-    # standard private keys rather than falling back to root's keyring.
-    for identity in "$owner_home/.ssh/id_ed25519" "$owner_home/.ssh/id_rsa"; do
-      [[ -r "$identity" ]] && ssh_command+=" -i \"$identity\""
-    done
-  fi
-  # Root can access the user's agent socket, but only accept a socket owned by
-  # the requesting user. This keeps key-based SSH authentication noninteractive.
-  if [[ -n "$agent_socket" && -S "$agent_socket" ]] && [[ "$(stat -c %u "$agent_socket")" == "$owner_uid" ]]; then
-    export SSH_AUTH_SOCK="$agent_socket"
-  else
-    unset SSH_AUTH_SOCK
-  fi
+safe_identity() {
+  local candidate="$1" canonical mode
+  [[ "$candidate" == "~/"* ]] && candidate="$HOME/${candidate:2}"
+  canonical="$(realpath -e "$candidate" 2>/dev/null)" || return
+  [[ "$canonical" == "$HOME/.ssh/"* && -f "$canonical" && ! -L "$canonical" ]] || return
+  [[ "$(stat -c %u "$canonical")" == "$UID" ]] || return
+  mode="$(stat -c %a "$canonical")"
+  (( (8#$mode & 077) == 0 )) || return
+  printf '%s\n' "$canonical"
 }
 
-root_start() {
-  local agent_socket="$1"
-  pkexec_context "$agent_socket"
-  start "$2" "$3" "$4" "$5" "$6"
-}
-
-root_stop() {
-  pkexec_context "${1:-}"
-  stop
+resolve() {
+  local target="$1" requested_port="$2" output key value host="" user="" port="" identity="" candidate
+  [[ -n "$target" && "$target" != -* && ! "$target" =~ [[:space:]] ]] || die "Invalid SSH host or alias."
+  [[ -z "$requested_port" ]] || valid_port "$requested_port" || die "SSH port must be between 1 and 65535."
+  output="$(ssh -G -- "$target" 2>/dev/null)" || die "Could not resolve SSH host '$target'."
+  while read -r key value; do
+    case "$key" in
+      hostname) host="$value" ;;
+      user) user="$value" ;;
+      port) port="$value" ;;
+      identityfile)
+        candidate="$(safe_identity "$value" || true)"
+        [[ -z "$identity" && -n "$candidate" ]] && identity="$candidate"
+        ;;
+    esac
+  done <<< "$output"
+  [[ -n "$requested_port" ]] && port="$requested_port"
+  valid_host "$host" || die "Resolved SSH host is unsafe or unsupported."
+  valid_user "$user" || die "Resolved SSH user is unsafe or unsupported."
+  valid_port "$port" || die "Resolved SSH port is invalid."
+  printf '%s\t%s\t%s\t%s\n' "$host" "$user" "$port" "${identity:--}"
 }
 
 case "${1:-}" in
   hosts) list_hosts ;;
   status) status ;;
-  start)
-    [[ $# -eq 6 ]] || die "Invalid launch request."
-    start "$2" "$3" "$4" "$5" "$6"
+  resolve)
+    [[ $# -eq 3 ]] || die "Invalid SSH resolution request."
+    resolve "$2" "$3"
     ;;
-  root-start)
-    [[ $# -eq 7 ]] || die "Invalid privileged launch request."
-    root_start "$2" "$3" "$4" "$5" "$6" "$7"
-    ;;
-  stop) stop ;;
-  root-stop) root_stop "${2:-}" ;;
   link-stats) link_stats ;;
   public-ip) public_ip ;;
-  *) die "Usage: sshuttledeck {hosts|link-stats|public-ip|status|start|root-start|root-stop|stop}" ;;
+  *) die "Usage: sshuttledeck {hosts|link-stats|public-ip|resolve|status}" ;;
 esac

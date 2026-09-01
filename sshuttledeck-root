@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+set -euo pipefail
+PATH=/usr/bin:/bin
+umask 027
+
+state_root="/run/sshuttledeck"
+
+die() {
+  printf 'SSHuttleDeck: %s\n' "$*" >&2
+  exit 1
+}
+
+valid_port() {
+  [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
+}
+
+valid_host() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ || "$1" =~ ^[0-9A-Fa-f:]+$ ]]
+}
+
+valid_user() {
+  [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_.-]{0,31}$ ]]
+}
+
+valid_route() {
+  [[ "$1" != @* && "$1" != -* && "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._:/-]*$ ]]
+}
+
+shell_quote() {
+  printf "'%s'" "${1//\'/\'\\\'\'}"
+}
+
+set_state_dir() {
+  local owner_uid="$1" owner_gid
+  owner_gid="$(id -g "$owner_uid")" || die "Unknown requesting user."
+  [[ ! -L "$state_root" ]] || die "Refusing symlinked runtime directory."
+  install -d -o root -g root -m 755 "$state_root"
+  state_dir="$state_root/$owner_uid"
+  [[ ! -L "$state_dir" ]] || die "Refusing symlinked user runtime directory."
+  install -d -o root -g "$owner_gid" -m 2750 "$state_dir"
+  pidfile="$state_dir/sshuttle.pid"
+  metafile="$state_dir/target"
+}
+
+is_our_process() {
+  local pid="$1" command
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  command="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  [[ "$command" == *sshuttle* && "$command" == *"--pidfile $pidfile"* ]]
+}
+
+legacy_tunnel_pid() {
+  local legacy_pidfile="/run/user/$owner_uid/sshuttledeck/sshuttle.pid" pid command
+  [[ -s "$legacy_pidfile" ]] || return
+  read -r pid < "$legacy_pidfile" || true
+  command="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ && "$command" == *sshuttle* && "$command" == *"--pidfile $legacy_pidfile"* ]] || return
+  printf '%s\n' "$pid"
+}
+
+prepare_context() {
+  owner_uid="${PKEXEC_UID:-}"
+  [[ $EUID -eq 0 && "$owner_uid" =~ ^[0-9]+$ ]] || die "Run through pkexec."
+  owner_name="$(id -nu "$owner_uid" 2>/dev/null)" || die "Unknown requesting user."
+  owner_home="$(getent passwd "$owner_uid" | cut -d: -f6)"
+  [[ -n "$owner_home" && -d "$owner_home" ]] || die "Could not resolve the requesting user's home directory."
+  set_state_dir "$owner_uid"
+}
+
+validated_identity() {
+  local identity="$1" canonical mode
+  [[ "$identity" != "-" ]] || { printf '\n'; return 0; }
+  canonical="$(realpath -e "$identity" 2>/dev/null)" || die "SSH identity file does not exist."
+  [[ "$canonical" == "$owner_home/.ssh/"* && -f "$canonical" && ! -L "$canonical" ]] || die "SSH identity must be a regular file under ~/.ssh."
+  [[ "$(stat -c %u "$canonical")" == "$owner_uid" ]] || die "SSH identity must be owned by the requesting user."
+  mode="$(stat -c %a "$canonical")"
+  (( (8#$mode & 077) == 0 )) || die "SSH identity permissions must not allow group or other access."
+  printf '%s\n' "$canonical"
+}
+
+start() {
+  local host="$1" port="$2" user="$3" identity="$4" routes="$5" dns="$6" auto_nets="$7"
+  local pid remote host_for_remote ssh_command key
+  local -a route_args args
+
+  valid_host "$host" || die "Invalid SSH host."
+  valid_port "$port" || die "Invalid SSH port."
+  valid_user "$user" || die "Invalid SSH user."
+  [[ "$dns" == "0" || "$dns" == "1" ]] || die "Invalid DNS option."
+  [[ "$auto_nets" == "0" || "$auto_nets" == "1" ]] || die "Invalid auto-networks option."
+  read -r -a route_args <<< "$routes"
+  (( ${#route_args[@]} > 0 )) || die "Enter at least one route."
+  for route in "${route_args[@]}"; do valid_route "$route" || die "Invalid route: $route"; done
+  command -v sshuttle >/dev/null || die "sshuttle is not installed."
+
+  if [[ -s "$pidfile" ]]; then
+    read -r pid < "$pidfile" || true
+    is_our_process "$pid" && die "SSHuttleDeck is already connected."
+  fi
+  [[ -z "$(legacy_tunnel_pid || true)" ]] || die "A legacy SSHuttleDeck tunnel is active; disconnect it first."
+  rm -f -- "$pidfile" "$metafile"
+
+  key="$(validated_identity "$identity")"
+  host_for_remote="$host"
+  [[ "$host" == *:* ]] && host_for_remote="[$host]"
+  remote="${user}@${host_for_remote}:${port}"
+  ssh_command="ssh -F /dev/null -o BatchMode=yes -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes"
+  ssh_command+=" -o UserKnownHostsFile=$(shell_quote "$owner_home/.ssh/known_hosts")"
+  [[ -n "$key" ]] && ssh_command+=" -i $(shell_quote "$key")"
+  args=(sshuttle --daemon --pidfile "$pidfile" --remote "$remote" --ssh-cmd "$ssh_command")
+  [[ "$dns" == "1" ]] && args+=(--dns)
+  [[ "$auto_nets" == "1" ]] && args+=(--auto-nets)
+  "${args[@]}" "${route_args[@]}"
+
+  for _ in {1..10}; do
+    if [[ -s "$pidfile" ]]; then
+      read -r pid < "$pidfile" || true
+      if is_our_process "$pid"; then
+        printf '%s\n' "$remote" > "$metafile"
+        chmod 640 "$pidfile" "$metafile"
+        printf 'SSHuttleDeck connected through %s.\n' "$remote"
+        return
+      fi
+    fi
+    sleep 0.5
+  done
+  rm -f -- "$pidfile" "$metafile"
+  die "SSHuttle exited before the tunnel became ready."
+}
+
+stop() {
+  local pid legacy_pid
+  if [[ -s "$pidfile" ]]; then
+    read -r pid < "$pidfile" || true
+    is_our_process "$pid" || die "Refusing to signal an unexpected process."
+  else
+    legacy_pid="$(legacy_tunnel_pid || true)"
+    [[ -n "$legacy_pid" ]] || { printf 'SSHuttleDeck is not connected.\n'; return; }
+    pid="$legacy_pid"
+  fi
+  kill -TERM "$pid"
+  rm -f -- "$pidfile" "$metafile"
+  rm -f -- "/run/user/$owner_uid/sshuttledeck/sshuttle.pid" "/run/user/$owner_uid/sshuttledeck/target"
+  printf 'SSHuttleDeck disconnected.\n'
+}
+
+prepare_context
+case "${1:-}" in
+  start)
+    [[ $# -eq 8 ]] || die "Invalid privileged launch request."
+    start "$2" "$3" "$4" "$5" "$6" "$7" "$8"
+    ;;
+  stop)
+    [[ $# -eq 1 ]] || die "Invalid privileged stop request."
+    stop
+    ;;
+  *) die "Usage: sshuttledeck-root {start|stop}" ;;
+esac
