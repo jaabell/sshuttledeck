@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "jaabell.sshuttledeck",
+  "name": "SSHuttleDeck",
+  "version": "1.0.0",
+  "author": "jaabell",
+  "license": "MIT",
+  "description": "An SSHuttle SSH VPN tunnel launcher for SSH config aliases, Tailscale machines, and custom endpoints.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "SSHuttleDeck",
+    "description": "An SSHuttle SSH VPN tunnel cockpit for SSH aliases, Tailscale machines, and custom hosts.",
+    "category": "Network",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}
