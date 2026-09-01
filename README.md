@@ -24,6 +24,11 @@ Click `SSH-` in the bar, choose an SSH config alias, Tailscale machine, or
 enter a custom endpoint. SSHuttleDeck uses Omarchy's graphical polkit prompt
 to grant the local firewall privilege without opening a terminal.
 
+On first use, the panel displays **Security Setup Required**. Click **Install
+secure helper**, review the graphical authorization request, and enter an
+administrator password. This copies only `sshuttledeck-root` to the root-owned
+path `/usr/local/libexec/sshuttledeck-root`; no tunnel starts during setup.
+
 Authenticate with the selected host in a terminal once before using it here,
 so its host key is trusted. SSHuttleDeck uses a private key under `~/.ssh`
 with no interactive passphrase; hosts requiring a remote password, agent-only
@@ -52,3 +57,15 @@ pkexec install -D -o root -g root -m 700 \
 Repeat this command after updating `sshuttledeck-root`. The helper stores its
 state under `/run/sshuttledeck/<uid>`, never loads user SSH configuration as
 root, and accepts only validated hosts, routes, ports, and private-key paths.
+
+## Remove
+
+Disconnect any active tunnel first. Removing the Omarchy plugin does not remove
+the root-owned helper automatically, by design. Remove both explicitly:
+
+```sh
+omarchy plugin remove jaabell.sshuttledeck
+pkexec rm -f /usr/local/libexec/sshuttledeck-root
+```
+
+The remaining `/run/sshuttledeck/` state is temporary and disappears on reboot.

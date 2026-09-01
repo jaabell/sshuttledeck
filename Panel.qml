@@ -28,6 +28,9 @@ Panel {
   property string resolveError: ""
   property string requestedTarget: ""
   property string requestedPort: ""
+  property string helperInstallOutput: ""
+  property string helperInstallError: ""
+  property bool rootHelperInstalled: false
   property string disconnectOutput: ""
   property string disconnectError: ""
   property bool sshHostsExpanded: false
@@ -40,6 +43,13 @@ Panel {
   property real previousRx: -1
   property real previousTx: -1
   property double previousLinkSampleMs: 0
+  property double sessionStartedAtMs: 0
+  property int sessionElapsedSec: 0
+  property string sessionBaselineInterface: ""
+  property real sessionBaselineRx: -1
+  property real sessionBaselineTx: -1
+  property real sessionDownloadTotal: 0
+  property real sessionUploadTotal: 0
   property var binaryStreams: []
   property int phraseIndex: 0
   readonly property var activePhrases: [
@@ -83,7 +93,9 @@ Panel {
     "Idle at the terminal"
   ]
 
-  readonly property string scriptPath: (Quickshell.env("HOME") || "") + "/.config/omarchy/plugins/" + moduleName + "/sshuttledeck"
+  readonly property string pluginDir: (Quickshell.env("HOME") || "") + "/.config/omarchy/plugins/" + moduleName
+  readonly property string scriptPath: pluginDir + "/sshuttledeck"
+  readonly property string rootHelperSourcePath: pluginDir + "/sshuttledeck-root"
   readonly property string rootHelperPath: "/usr/local/libexec/sshuttledeck-root"
   readonly property bool connected: state === "Connected"
   readonly property var currentPhrases: connected ? activePhrases : inactivePhrases
@@ -138,6 +150,26 @@ Panel {
     return (value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)) + " " + units[index]
   }
 
+  function bytesLabel(bytes) {
+    var value = Math.max(0, Number(bytes) || 0)
+    var units = ["B", "KiB", "MiB", "GiB", "TiB"]
+    var index = 0
+    while (value >= 1024 && index < units.length - 1) {
+      value /= 1024
+      index++
+    }
+    return (value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)) + " " + units[index]
+  }
+
+  function durationLabel(seconds) {
+    var total = Math.max(0, Math.floor(Number(seconds) || 0))
+    var hours = Math.floor(total / 3600)
+    var minutes = Math.floor((total % 3600) / 60)
+    var secs = total % 60
+    if (hours > 0) return hours + "h " + String(minutes).padStart(2, "0") + "m"
+    return minutes + "m " + String(secs).padStart(2, "0") + "s"
+  }
+
   function parseLinkStats(text) {
     var fields = String(text || "").trim().split("\t")
     if (fields.length !== 3) return
@@ -151,6 +183,16 @@ Panel {
       uploadBps = Math.max(0, (tx - previousTx) / elapsed)
     }
     primaryInterface = fields[0]
+    if (sessionBaselineInterface === fields[0] && sessionBaselineRx >= 0 && sessionBaselineTx >= 0) {
+      sessionDownloadTotal = Math.max(0, rx - sessionBaselineRx)
+      sessionUploadTotal = Math.max(0, tx - sessionBaselineTx)
+    } else if (connected && sessionBaselineRx < 0) {
+      sessionBaselineInterface = fields[0]
+      sessionBaselineRx = rx
+      sessionBaselineTx = tx
+      sessionDownloadTotal = 0
+      sessionUploadTotal = 0
+    }
     previousRx = rx
     previousTx = tx
     previousLinkSampleMs = now
@@ -217,12 +259,40 @@ Panel {
 
   function parseStatus(text) {
     var fields = String(text || "").trim().split("\t")
+    var wasConnected = connected
     connectedTarget = fields.length > 1 ? fields[1] : ""
     state = fields[0] === "connected" ? "Connected" : "Disconnected"
+    if (!connected) {
+      sessionStartedAtMs = 0
+      sessionElapsedSec = 0
+      sessionBaselineInterface = ""
+      sessionBaselineRx = -1
+      sessionBaselineTx = -1
+      sessionDownloadTotal = 0
+      sessionUploadTotal = 0
+      return
+    }
+    var startedSeconds = Number(fields[2])
+    if (isFinite(startedSeconds) && startedSeconds > 0) sessionStartedAtMs = startedSeconds * 1000
+    if (!wasConnected) {
+      sessionBaselineInterface = ""
+      sessionBaselineRx = -1
+      sessionBaselineTx = -1
+    }
+    if (fields.length >= 6 && Number(fields[4]) >= 0 && Number(fields[5]) >= 0) {
+      sessionBaselineInterface = String(fields[3] || "")
+      sessionBaselineRx = Number(fields[4])
+      sessionBaselineTx = Number(fields[5])
+    }
+    if (sessionStartedAtMs > 0) sessionElapsedSec = Math.max(0, Math.floor((Date.now() - sessionStartedAtMs) / 1000))
   }
 
   function launch(target, port) {
     var routes = routesField.text.trim()
+    if (!rootHelperInstalled) {
+      message = "Install the secure root helper before starting a tunnel."
+      return
+    }
     if (connected) {
       message = "A tunnel is already active through " + connectedTarget + "."
       return
@@ -246,12 +316,28 @@ Panel {
   }
 
   function disconnect() {
+    if (!rootHelperInstalled) {
+      message = "Install the secure root helper before managing a tunnel."
+      return
+    }
     if (disconnectProcess.running) return
     message = "Requesting permission to disconnect..."
     disconnectOutput = ""
     disconnectError = ""
     disconnectProcess.command = ["pkexec", rootHelperPath, "stop"]
     disconnectProcess.running = true
+  }
+
+  function installRootHelper() {
+    if (rootHelperInstallProcess.running) return
+    helperInstallOutput = ""
+    helperInstallError = ""
+    message = "Authorize installation of the root-owned SSHuttleDeck helper..."
+    rootHelperInstallProcess.command = [
+      "pkexec", "/usr/bin/install", "-D", "-o", "root", "-g", "root", "-m", "700",
+      rootHelperSourcePath, rootHelperPath
+    ]
+    rootHelperInstallProcess.running = true
   }
 
   implicitWidth: button.implicitWidth
@@ -467,6 +553,49 @@ Panel {
           }
 
           Rectangle {
+            Layout.fillWidth: true
+            visible: !root.rootHelperInstalled
+            implicitHeight: securitySetup.implicitHeight + Style.space(24)
+            radius: Style.cornerRadius
+            color: "#493617"
+            border.width: 1
+            border.color: "#fbbf24"
+
+            ColumnLayout {
+              id: securitySetup
+              anchors.left: parent.left
+              anchors.right: parent.right
+              anchors.verticalCenter: parent.verticalCenter
+              anchors.margins: Style.space(12)
+              spacing: Style.space(6)
+
+              Text {
+                Layout.fillWidth: true
+                text: "SECURITY SETUP REQUIRED"
+                color: "#fef3c7"
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                font.bold: true
+              }
+
+              Text {
+                Layout.fillWidth: true
+                text: "Install the immutable root-owned helper once before launching a VPN. The following password dialog authorizes only that installation."
+                color: "#fde68a"
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+
+              Button {
+                text: rootHelperInstallProcess.running ? "Installing..." : "Install secure helper"
+                enabled: !rootHelperInstallProcess.running
+                onClicked: root.installRootHelper()
+              }
+            }
+          }
+
+          Rectangle {
             id: tunnelBeaconSurface
             Layout.fillWidth: true
             implicitHeight: Style.space(68)
@@ -622,6 +751,31 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
               horizontalAlignment: Text.AlignRight
+            }
+          }
+
+          RowLayout {
+            Layout.fillWidth: true
+            spacing: Style.space(8)
+
+            Text {
+              text: "SESSION " + (root.connected ? root.durationLabel(root.sessionElapsedSec) : "--")
+              color: root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            Text {
+              Layout.fillWidth: true
+              text: root.connected
+                ? "down " + root.bytesLabel(root.sessionDownloadTotal) + " | up " + root.bytesLabel(root.sessionUploadTotal)
+                : "No link traffic recorded"
+              color: root.muted
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              horizontalAlignment: Text.AlignRight
+              elide: Text.ElideRight
             }
           }
 
@@ -823,6 +977,27 @@ Panel {
   }
 
   Process {
+    id: rootHelperCheckProcess
+    command: ["test", "-e", root.rootHelperPath]
+    onExited: function(exitCode) { root.rootHelperInstalled = exitCode === 0 }
+  }
+
+  Process {
+    id: rootHelperInstallProcess
+    command: []
+    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.helperInstallOutput = text }
+    stderr: StdioCollector { waitForEnd: true; onStreamFinished: root.helperInstallError = text }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        message = "Secure root helper installed."
+        rootHelperCheckProcess.running = true
+      } else {
+        message = String(root.helperInstallError || root.helperInstallOutput || "Secure helper installation was denied or failed.").trim()
+      }
+    }
+  }
+
+  Process {
     id: hostsProcess
     command: [root.scriptPath, "hosts"]
     stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.sshOutput = text }
@@ -931,6 +1106,16 @@ Panel {
   }
 
   Timer {
+    interval: 1000
+    running: root.connected
+    repeat: true
+    onTriggered: {
+      if (root.sessionStartedAtMs > 0)
+        root.sessionElapsedSec = Math.max(0, Math.floor((Date.now() - root.sessionStartedAtMs) / 1000))
+    }
+  }
+
+  Timer {
     interval: 60000
     running: root.opened
     repeat: true
@@ -975,6 +1160,7 @@ Panel {
 
   Component.onCompleted: {
     binaryStreams = createBinaryStreams()
+    rootHelperCheckProcess.running = true
     refresh()
   }
 }

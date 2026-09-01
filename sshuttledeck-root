@@ -40,6 +40,15 @@ set_state_dir() {
   install -d -o root -g "$owner_gid" -m 2750 "$state_dir"
   pidfile="$state_dir/sshuttle.pid"
   metafile="$state_dir/target"
+  startfile="$state_dir/started-at"
+  linkstartfile="$state_dir/link-start"
+}
+
+link_stats() {
+  local iface
+  iface="$(ip route show default 2>/dev/null | awk 'NR == 1 { print $5 }')"
+  [[ -n "$iface" ]] || return 1
+  awk -v iface="$iface" '$1 == iface ":" { print iface "\t" $2 "\t" $10 }' /proc/net/dev
 }
 
 is_our_process() {
@@ -98,7 +107,7 @@ start() {
     is_our_process "$pid" && die "SSHuttleDeck is already connected."
   fi
   [[ -z "$(legacy_tunnel_pid || true)" ]] || die "A legacy SSHuttleDeck tunnel is active; disconnect it first."
-  rm -f -- "$pidfile" "$metafile"
+  rm -f -- "$pidfile" "$metafile" "$startfile" "$linkstartfile"
 
   key="$(validated_identity "$identity")"
   host_for_remote="$host"
@@ -117,14 +126,17 @@ start() {
       read -r pid < "$pidfile" || true
       if is_our_process "$pid"; then
         printf '%s\n' "$remote" > "$metafile"
-        chmod 640 "$pidfile" "$metafile"
+        date +%s > "$startfile"
+        link_stats > "$linkstartfile" || rm -f -- "$linkstartfile"
+        chmod 640 "$pidfile" "$metafile" "$startfile"
+        [[ -e "$linkstartfile" ]] && chmod 640 "$linkstartfile"
         printf 'SSHuttleDeck connected through %s.\n' "$remote"
         return
       fi
     fi
     sleep 0.5
   done
-  rm -f -- "$pidfile" "$metafile"
+  rm -f -- "$pidfile" "$metafile" "$startfile" "$linkstartfile"
   die "SSHuttle exited before the tunnel became ready."
 }
 
@@ -139,7 +151,7 @@ stop() {
     pid="$legacy_pid"
   fi
   kill -TERM "$pid"
-  rm -f -- "$pidfile" "$metafile"
+  rm -f -- "$pidfile" "$metafile" "$startfile" "$linkstartfile"
   rm -f -- "/run/user/$owner_uid/sshuttledeck/sshuttle.pid" "/run/user/$owner_uid/sshuttledeck/target"
   printf 'SSHuttleDeck disconnected.\n'
 }

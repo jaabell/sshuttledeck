@@ -5,6 +5,8 @@ set_runtime_dir() {
   runtime_dir="$1"
   pidfile="${runtime_dir}/sshuttle.pid"
   metafile="${runtime_dir}/target"
+  startfile="${runtime_dir}/started-at"
+  linkstartfile="${runtime_dir}/link-start"
 }
 
 set_runtime_dir "/run/sshuttledeck/$UID"
@@ -72,12 +74,15 @@ public_ip() {
 }
 
 status() {
-  local pid target="" command="" active_pidfile="$pidfile" active_metafile="$metafile"
+  local pid target="" command="" started="" link_start="" elapsed=""
+  local active_pidfile="$pidfile" active_metafile="$metafile" active_startfile="$startfile" active_linkstartfile="$linkstartfile"
   # Preserve control of an existing tunnel while migrating it from the former
   # user-runtime location to the hardened root-owned runtime directory.
   if [[ ! -s "$active_pidfile" && -s "/run/user/$UID/sshuttledeck/sshuttle.pid" ]]; then
     active_pidfile="/run/user/$UID/sshuttledeck/sshuttle.pid"
     active_metafile="/run/user/$UID/sshuttledeck/target"
+    active_startfile="/run/user/$UID/sshuttledeck/started-at"
+    active_linkstartfile="/run/user/$UID/sshuttledeck/link-start"
   fi
   [[ -s "$active_pidfile" ]] || { printf 'disconnected\n'; return; }
   read -r pid < "$active_pidfile" || true
@@ -86,7 +91,15 @@ status() {
   command="$(ps -p "$pid" -o args= 2>/dev/null || true)"
   if [[ "$pid" =~ ^[0-9]+$ ]] && [[ "$command" == *sshuttle* ]] && [[ "$command" == *"--pidfile $active_pidfile"* ]]; then
     [[ -r "$active_metafile" ]] && target="$(<"$active_metafile")"
-    printf 'connected\t%s\n' "$target"
+    if [[ -r "$active_startfile" ]]; then
+      read -r started < "$active_startfile" || true
+    fi
+    if [[ ! "$started" =~ ^[0-9]+$ ]]; then
+      elapsed="$(ps -p "$pid" -o etimes= 2>/dev/null | tr -d ' ' || true)"
+      [[ "$elapsed" =~ ^[0-9]+$ ]] && started="$(( $(date +%s) - elapsed ))"
+    fi
+    [[ -r "$active_linkstartfile" ]] && link_start="$(<"$active_linkstartfile")"
+    printf 'connected\t%s\t%s\t%s\n' "$target" "$started" "$link_start"
   else
     printf 'disconnected\n'
   fi
