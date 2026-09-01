@@ -88,7 +88,7 @@ link_stats() {
 
 public_ip() {
   command -v curl >/dev/null || die "curl is not installed."
-  curl --fail --silent --show-error --max-time 5 https://api.ipify.org
+  curl --fail --silent --show-error --max-time 5 https://ipwho.is/
 }
 
 status() {

@@ -29,15 +29,60 @@ Panel {
   property bool sshHostsExpanded: false
   property bool tailscaleHostsExpanded: false
   property string publicIp: "Checking..."
+  property string publicIsp: ""
   property string primaryInterface: ""
   property real downloadBps: 0
   property real uploadBps: 0
   property real previousRx: -1
   property real previousTx: -1
   property double previousLinkSampleMs: 0
+  property var binaryStreams: []
+  property int phraseIndex: 0
+  readonly property var activePhrases: [
+    "Braiding packets",
+    "Wiring bits",
+    "Shuttling bytes",
+    "Tuning the tunnel",
+    "Encrypting traffic",
+    "Polishing routes",
+    "Sealing the wire",
+    "Threading sockets",
+    "Folding latency",
+    "Whispering through SSH",
+    "Herding datagrams",
+    "Mapping the backroads",
+    "Carrying secrets",
+    "Splicing the uplink",
+    "Dodging the open internet",
+    "Packing the payload",
+    "Handshaking quietly",
+    "Bending the route table",
+    "Keeping the bits warm"
+  ]
+  readonly property var inactivePhrases: [
+    "Waiting for a route",
+    "Watching the wire",
+    "Tunnel on standby",
+    "Looking for a gateway",
+    "Keeping the deck clear",
+    "No packets in flight",
+    "Listening for a hostname",
+    "Routes are taking a nap",
+    "The wire is quiet",
+    "Waiting on an SSH hop",
+    "No tunnel to tend",
+    "Holding the keys",
+    "Watching the route table",
+    "Parking the packets",
+    "Gateway not selected",
+    "Keeping the socket dry",
+    "Idle at the terminal"
+  ]
 
   readonly property string scriptPath: (Quickshell.env("HOME") || "") + "/.config/omarchy/plugins/" + moduleName + "/sshuttledeck"
   readonly property bool connected: state === "Connected"
+  readonly property var currentPhrases: connected ? activePhrases : inactivePhrases
+  readonly property string heroPhraseText: currentPhrases[phraseIndex % currentPhrases.length]
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color muted: Qt.darker(foreground, 1.55)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -107,8 +152,31 @@ Panel {
   }
 
   function parsePublicIp(text) {
-    var value = String(text || "").trim()
-    publicIp = value !== "" && value.length <= 64 ? value : "Unavailable"
+    var raw = String(text || "").trim()
+    try {
+      var payload = JSON.parse(raw)
+      if (payload.success === false || !payload.ip) throw new Error("IP lookup failed")
+      publicIp = String(payload.ip)
+      publicIsp = String((payload.connection && (payload.connection.isp || payload.connection.org)) || "")
+    } catch (error) {
+      publicIp = raw !== "" && raw.length <= 64 ? raw : "Unavailable"
+      publicIsp = ""
+    }
+  }
+
+  function createBinaryStreams() {
+    var streams = []
+    for (var row = 0; row < 7; row++) {
+      var groups = 7 + Math.floor(Math.random() * 15)
+      var bits = ""
+      for (var group = 0; group < groups; group++) {
+        var length = 3 + Math.floor(Math.random() * 12)
+        for (var bit = 0; bit < length; bit++) bits += Math.random() > 0.5 ? "1" : "0"
+        bits += " "
+      }
+      streams.push({ bits: bits, y: Style.space(2) + row * Style.space(9), duration: 5600 + Math.floor(Math.random() * 8200) })
+    }
+    return streams
   }
 
   function parseSshHosts(text) {
@@ -210,7 +278,7 @@ Panel {
     fixedWidth: vertical ? -1 : Style.space(54)
     fixedHeight: vertical ? Style.space(54) : -1
     tooltipText: root.connected
-      ? "SSHuttle tunnel active: " + root.connectedTarget + " | " + root.rateLabel(root.downloadBps) + " down"
+      ? "SSHuttle tunnel active: " + root.connectedTarget + " | " + root.publicIp + (root.publicIsp !== "" ? " via " + root.publicIsp : "")
       : "SSHuttle tunnel disconnected"
 
     Rectangle {
@@ -335,20 +403,55 @@ Panel {
           spacing: Style.space(10)
 
           PanelHero {
+            id: hero
             Layout.fillWidth: true
             title: "SSHuttleDeck"
             meta: root.connected
-              ? "TUNNEL ACTIVE through " + root.connectedTarget
-              : "TUNNEL DISCONNECTED"
+              ? root.heroPhraseText + " through " + root.connectedTarget
+              : root.heroPhraseText
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
-              Text {
-                text: "SSH"
-                color: root.connected ? root.foreground : root.muted
-                font.family: root.fontFamily
-                font.bold: true
-                font.pixelSize: Style.font.heading
+              Item {
+                width: Style.space(40)
+                height: width
+
+                Rectangle {
+                  anchors.centerIn: parent
+                  width: Style.space(38)
+                  height: width
+                  radius: width / 2
+                  color: root.connected ? "#14532d" : "#303946"
+                  border.width: 1
+                  border.color: root.connected ? "#4ade80" : root.muted
+                }
+
+                Rectangle {
+                  id: tunnelPortal
+                  anchors.centerIn: parent
+                  width: Style.space(26)
+                  height: width
+                  radius: width / 2
+                  color: "transparent"
+                  border.width: 2
+                  border.color: root.connected ? "#86efac" : root.muted
+
+                  SequentialAnimation on scale {
+                    running: root.connected
+                    loops: Animation.Infinite
+                    NumberAnimation { to: 1.15; duration: 950; easing.type: Easing.InOutQuad }
+                    NumberAnimation { to: 1.0; duration: 950; easing.type: Easing.InOutQuad }
+                  }
+                }
+
+                Text {
+                  anchors.centerIn: parent
+                  text: ">_"
+                  color: root.connected ? "#dcfce7" : root.foreground
+                  font.family: "monospace"
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
               }
             }
             trailingControl: Component {
@@ -360,12 +463,44 @@ Panel {
           }
 
           Rectangle {
+            id: tunnelBeaconSurface
             Layout.fillWidth: true
             implicitHeight: Style.space(68)
             radius: Style.cornerRadius
+            clip: true
             color: root.connected ? "#14532d" : "#303946"
             border.width: 1
             border.color: root.connected ? "#4ade80" : "#596575"
+
+            Item {
+              anchors.fill: parent
+              visible: root.connected
+              opacity: 0.3
+
+              Repeater {
+                model: root.binaryStreams
+
+                Text {
+                  id: bitstream
+                  required property var modelData
+                  y: modelData.y
+                  x: -width
+                  text: modelData.bits
+                  color: "#dcfce7"
+                  font.family: "monospace"
+                  font.pixelSize: Style.space(7)
+
+                  NumberAnimation on x {
+                    running: root.connected
+                    from: -bitstream.width
+                    to: tunnelBeaconSurface.width
+                    duration: modelData.duration
+                    loops: Animation.Infinite
+                    easing.type: Easing.Linear
+                  }
+                }
+              }
+            }
 
             RowLayout {
               anchors.fill: parent
@@ -500,7 +635,7 @@ Panel {
 
             Text {
               Layout.fillWidth: true
-              text: root.publicIp
+              text: root.publicIp + (root.publicIsp !== "" ? "  |  " + root.publicIsp : "")
               color: root.muted
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -779,5 +914,36 @@ Panel {
     onTriggered: root.refresh()
   }
 
-  Component.onCompleted: refresh()
+  Timer {
+    interval: 2800
+    running: root.opened
+    repeat: true
+    onTriggered: phraseSwap.restart()
+  }
+
+  SequentialAnimation {
+    id: phraseSwap
+    PropertyAnimation {
+      target: hero
+      property: "metaOpacity"
+      to: 0
+      duration: 160
+      easing.type: Easing.OutQuad
+    }
+    ScriptAction {
+      script: root.phraseIndex = (root.phraseIndex + 1) % root.currentPhrases.length
+    }
+    PropertyAnimation {
+      target: hero
+      property: "metaOpacity"
+      to: 1
+      duration: 240
+      easing.type: Easing.InQuad
+    }
+  }
+
+  Component.onCompleted: {
+    binaryStreams = createBinaryStreams()
+    refresh()
+  }
 }
