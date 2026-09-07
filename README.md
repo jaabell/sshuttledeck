@@ -20,6 +20,7 @@ the panel requests public-IP and ISP information from `ipwho.is`.
 ## Requirements
 
 - `sshuttle` on the local machine: `omarchy pkg add sshuttle`
+- `curl` for the optional public-IP and ISP display
 - SSH access to the selected remote machine
 - A Python interpreter on the remote machine
 - A one-time graphical authorization to install the root-owned launcher
