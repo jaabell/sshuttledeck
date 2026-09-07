@@ -1,10 +1,16 @@
 # SSHuttleDeck
 
+<p align="center">
+  <img src="assets/sshuttledeck-mark.svg" width="128" alt="SSHuttleDeck logo">
+</p>
+
 SSHuttleDeck is an Omarchy bar widget that launches SSHuttle SSH VPN tunnels
 through SSH config aliases, Tailscale machines, or a custom host/IP and SSH
 port.
 
 Keywords: SSHuttle, SSH, VPN, tunnel, Tailscale, routing.
+
+![SSHuttleDeck preview](preview.png)
 
 The panel shows SSHuttle's daemon state, primary-link throughput, and the
 current public IP address. Link throughput is intentionally labeled as link
@@ -17,6 +23,12 @@ the panel requests public-IP and ISP information from `ipwho.is`.
 - SSH access to the selected remote machine
 - A Python interpreter on the remote machine
 - A one-time graphical authorization to install the root-owned launcher
+
+## Install
+
+```sh
+omarchy plugin add https://github.com/jaabell/sshuttledeck.git --enable
+```
 
 ## Usage
 
