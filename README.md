@@ -15,7 +15,8 @@ Keywords: SSHuttle, SSH, VPN, tunnel, Tailscale, routing.
 The panel shows SSHuttle's daemon state, primary-link throughput, and the
 current public IP address. Link throughput is intentionally labeled as link
 traffic: SSHuttle does not expose exact per-tunnel traffic counters. Opening
-the panel requests public-IP and ISP information from `ipwho.is`.
+the panel requests public-IP and ISP information from `ipwho.is`. Its response
+is limited to 4 KiB before parsing.
 
 ## Requirements
 

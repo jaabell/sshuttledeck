@@ -22,6 +22,7 @@ Panel {
   property string statusOutput: ""
   property string linkOutput: ""
   property string publicIpOutput: ""
+  property bool publicIpOverflow: false
   property string launchOutput: ""
   property string launchError: ""
   property string resolveOutput: ""
@@ -97,6 +98,7 @@ Panel {
   readonly property string scriptPath: pluginDir + "/sshuttledeck"
   readonly property string rootHelperSourcePath: pluginDir + "/sshuttledeck-root"
   readonly property string rootHelperPath: "/usr/local/libexec/sshuttledeck-root"
+  readonly property int publicIpResponseLimit: 4096
   // This release constant must match privileged-helper.manifest.json.
   readonly property string rootHelperSha256: "87a161c7c2cb82dc554781c8daa1952afd9983400438cbccbb5fb5b7e7e2eb53"
   readonly property string rootHelperInstallerScript: [
@@ -229,6 +231,7 @@ Panel {
     }
     if (root.opened && !publicIpProcess.running) {
       publicIpOutput = ""
+      publicIpOverflow = false
       publicIpProcess.running = true
     }
   }
@@ -294,6 +297,11 @@ Panel {
 
   function parsePublicIp(text) {
     var raw = String(text || "").trim()
+    if (raw.length > publicIpResponseLimit) {
+      publicIp = "Unavailable"
+      publicIsp = ""
+      return
+    }
     try {
       var payload = JSON.parse(raw)
       if (payload.success === false || !payload.ip) throw new Error("IP lookup failed")
@@ -1127,10 +1135,27 @@ Panel {
   Process {
     id: publicIpProcess
     command: [root.scriptPath, "public-ip"]
-    stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.publicIpOutput = text }
+    // Keep external responses bounded before they reach the persistent shell state.
+    stdout: SplitParser {
+      splitMarker: ""
+      onRead: function(data) {
+        if (root.publicIpOverflow) return
+        var chunk = String(data)
+        if (root.publicIpOutput.length + chunk.length > root.publicIpResponseLimit) {
+          root.publicIpOverflow = true
+          root.publicIpOutput = ""
+          publicIpProcess.running = false
+          return
+        }
+        root.publicIpOutput += chunk
+      }
+    }
     onExited: function(exitCode) {
-      if (exitCode === 0) root.parsePublicIp(root.publicIpOutput)
-      else root.publicIp = "Unavailable"
+      if (exitCode === 0 && !root.publicIpOverflow) root.parsePublicIp(root.publicIpOutput)
+      else {
+        root.publicIp = "Unavailable"
+        root.publicIsp = ""
+      }
     }
   }
 

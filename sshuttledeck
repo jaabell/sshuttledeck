@@ -70,7 +70,7 @@ link_stats() {
 
 public_ip() {
   command -v curl >/dev/null || die "curl is not installed."
-  curl --fail --silent --show-error --max-time 5 https://ipwho.is/
+  curl --fail --silent --show-error --max-time 5 --max-filesize 4096 https://ipwho.is/
 }
 
 helper_installed() {
