@@ -39,8 +39,9 @@ to grant the local firewall privilege without opening a terminal.
 
 On first use, the panel displays **Security Setup Required**. Click **Install
 secure helper**, review the graphical authorization request, and enter an
-administrator password. This copies only `sshuttledeck-root` to the root-owned
-path `/usr/local/libexec/sshuttledeck-root`; no tunnel starts during setup.
+administrator password. This copies only the release-pinned
+`sshuttledeck-root` to `/usr/local/libexec/sshuttledeck-root`; no tunnel starts
+during setup.
 
 Authenticate with the selected host in a terminal once before using it here,
 so its host key is trusted. SSHuttleDeck uses a private key under `~/.ssh`
@@ -58,18 +59,19 @@ SSHuttleDeck tunnel.
 
 ## Privileged Helper
 
-The privileged launcher is installed outside the plugin directory so it cannot
-be modified by user-level plugin code:
+The panel invokes a root-side verifier, not `install` directly. It opens the
+helper with symlink protection, verifies that the opened file is a regular file
+owned by the requesting user and not group/world-writable, then stages that
+open file descriptor in `/usr/local/libexec`. The staged and installed bytes
+must both match the SHA-256 pinned in `privileged-helper.manifest.json`; a
+mismatch removes the helper and its root-owned verification marker, then
+aborts. The panel requires that marker to match the pinned digest before it
+will execute the helper. Repeat the panel setup after an update that changes
+`sshuttledeck-root`.
 
-```sh
-pkexec install -D -o root -g root -m 700 \
-  ~/.config/omarchy/plugins/jaabell.sshuttledeck/sshuttledeck-root \
-  /usr/local/libexec/sshuttledeck-root
-```
-
-Repeat this command after updating `sshuttledeck-root`. The helper stores its
-state under `/run/sshuttledeck/<uid>`, never loads user SSH configuration as
-root, and accepts only validated hosts, routes, ports, and private-key paths.
+The helper stores its state under `/run/sshuttledeck/<uid>`, never loads user
+SSH configuration as root, and accepts only validated hosts, routes, ports,
+and private-key paths.
 
 ## Remove
 
@@ -78,7 +80,8 @@ the root-owned helper automatically, by design. Remove both explicitly:
 
 ```sh
 omarchy plugin remove jaabell.sshuttledeck
-pkexec rm -f /usr/local/libexec/sshuttledeck-root
+pkexec rm -f /usr/local/libexec/sshuttledeck-root \
+  /usr/local/libexec/sshuttledeck-root.sha256
 ```
 
 The remaining `/run/sshuttledeck/` state is temporary and disappears on reboot.

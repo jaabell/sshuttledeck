@@ -97,6 +97,100 @@ Panel {
   readonly property string scriptPath: pluginDir + "/sshuttledeck"
   readonly property string rootHelperSourcePath: pluginDir + "/sshuttledeck-root"
   readonly property string rootHelperPath: "/usr/local/libexec/sshuttledeck-root"
+  // This release constant must match privileged-helper.manifest.json.
+  readonly property string rootHelperSha256: "87a161c7c2cb82dc554781c8daa1952afd9983400438cbccbb5fb5b7e7e2eb53"
+  readonly property string rootHelperInstallerScript: [
+    "import hashlib, os, pwd, re, stat, sys, tempfile",
+    "src, dst, expected = sys.argv[1:]",
+    "tmp = marker_tmp = None",
+    "installed = False",
+    "def fail(message, remove_destination=False):",
+    "    global tmp",
+    "    for path in (tmp, marker_tmp):",
+    "        if path:",
+    "            try: os.unlink(path)",
+    "            except FileNotFoundError: pass",
+    "    if remove_destination:",
+    "        for path in (dst, dst + '.sha256'):",
+    "            try: os.unlink(path)",
+    "            except FileNotFoundError: pass",
+    "    raise SystemExit('SSHuttleDeck: ' + message)",
+    "def check_source(metadata):",
+    "    if not stat.S_ISREG(metadata.st_mode): fail('Helper source is not a regular file.')",
+    "    if metadata.st_uid != owner_uid: fail('Helper source is not owned by the requesting user.')",
+    "    if stat.S_IMODE(metadata.st_mode) & 0o022: fail('Helper source must not be group- or world-writable.')",
+    "    if metadata.st_size > 1048576: fail('Helper source is unexpectedly large.')",
+    "if os.geteuid() != 0: fail('Installer must run through pkexec.')",
+    "uid_text = os.environ.get('PKEXEC_UID', '')",
+    "if not re.fullmatch(r'[0-9]+', uid_text): fail('Missing requesting user identity.')",
+    "owner_uid = int(uid_text)",
+    "try: owner_home = pwd.getpwuid(owner_uid).pw_dir",
+    "except KeyError: fail('Unknown requesting user.')",
+    "expected_src = os.path.join(owner_home, '.config', 'omarchy', 'plugins', 'jaabell.sshuttledeck', 'sshuttledeck-root')",
+    "if src != expected_src: fail('Unexpected helper source path.')",
+    "if dst != '/usr/local/libexec/sshuttledeck-root': fail('Unexpected helper destination path.')",
+    "if not re.fullmatch(r'[0-9a-f]{64}', expected): fail('Invalid helper digest.')",
+    "source_lstat = os.lstat(src)",
+    "if stat.S_ISLNK(source_lstat.st_mode): fail('Refusing symbolic-link helper source.')",
+    "check_source(source_lstat)",
+    "destination_dir = os.path.dirname(dst)",
+    "destination_lstat = os.lstat(destination_dir)",
+    "if stat.S_ISLNK(destination_lstat.st_mode) or not stat.S_ISDIR(destination_lstat.st_mode): fail('Unsafe helper destination directory.')",
+    "if destination_lstat.st_uid != 0 or stat.S_IMODE(destination_lstat.st_mode) & 0o022: fail('Helper destination directory is writable by non-root users.')",
+    "source_fd = os.open(src, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)",
+    "try:",
+    "    check_source(os.fstat(source_fd))",
+    "    staged_fd, tmp = tempfile.mkstemp(prefix='.sshuttledeck-root.', dir=destination_dir)",
+    "    os.fchmod(staged_fd, 0o700)",
+    "    os.fchown(staged_fd, 0, 0)",
+    "    digest = hashlib.sha256()",
+    "    with os.fdopen(source_fd, 'rb', closefd=True) as source, os.fdopen(staged_fd, 'wb', closefd=True) as staged:",
+    "        source_fd = staged_fd = -1",
+    "        while True:",
+    "            block = source.read(131072)",
+    "            if not block: break",
+    "            digest.update(block)",
+    "            staged.write(block)",
+    "        staged.flush()",
+    "        os.fsync(staged.fileno())",
+    "    if digest.hexdigest() != expected: fail('Helper source digest does not match the release manifest.', True)",
+    "    os.replace(tmp, dst)",
+    "    tmp = None",
+    "    installed = True",
+    "    verify_fd = os.open(dst, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)",
+    "    try:",
+    "        installed_metadata = os.fstat(verify_fd)",
+    "        if not stat.S_ISREG(installed_metadata.st_mode) or installed_metadata.st_uid != 0 or installed_metadata.st_gid != 0 or stat.S_IMODE(installed_metadata.st_mode) != 0o700: fail('Installed helper has unsafe ownership or mode.', True)",
+    "        installed_digest = hashlib.file_digest(os.fdopen(verify_fd, 'rb', closefd=True), 'sha256').hexdigest()",
+    "        verify_fd = -1",
+    "    finally:",
+    "        if verify_fd >= 0: os.close(verify_fd)",
+    "    if installed_digest != expected: fail('Installed helper digest verification failed.', True)",
+    "    marker_fd, marker_tmp = tempfile.mkstemp(prefix='.sshuttledeck-root.sha256.', dir=destination_dir)",
+    "    os.fchmod(marker_fd, 0o644)",
+    "    os.fchown(marker_fd, 0, 0)",
+    "    os.write(marker_fd, (expected + '\\n').encode('ascii'))",
+    "    os.fsync(marker_fd)",
+    "    os.close(marker_fd)",
+    "    marker_fd = -1",
+    "    os.replace(marker_tmp, dst + '.sha256')",
+    "    marker_tmp = None",
+    "    marker_fd = os.open(dst + '.sha256', os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK)",
+    "    try:",
+    "        marker_metadata = os.fstat(marker_fd)",
+    "        if not stat.S_ISREG(marker_metadata.st_mode) or marker_metadata.st_uid != 0 or marker_metadata.st_gid != 0 or stat.S_IMODE(marker_metadata.st_mode) != 0o644: fail('Helper verification marker has unsafe ownership or mode.', True)",
+    "        if os.read(marker_fd, 65) != (expected + '\\n').encode('ascii'): fail('Helper verification marker is invalid.', True)",
+    "    finally:",
+    "        if marker_fd >= 0: os.close(marker_fd)",
+    "        marker_fd = -1",
+    "except OSError as error:",
+    "    fail(str(error), installed)",
+    "finally:",
+    "    if source_fd >= 0: os.close(source_fd)",
+    "    if 'staged_fd' in locals() and staged_fd >= 0: os.close(staged_fd)",
+    "    if 'marker_fd' in locals() and marker_fd >= 0: os.close(marker_fd)",
+    "print('SSHuttleDeck secure root helper installed.')"
+  ].join("\\n")
   readonly property bool connected: state === "Connected"
   readonly property var currentPhrases: connected ? activePhrases : inactivePhrases
   readonly property string heroPhraseText: currentPhrases[phraseIndex % currentPhrases.length]
@@ -334,8 +428,8 @@ Panel {
     helperInstallError = ""
     message = "Authorize installation of the root-owned SSHuttleDeck helper..."
     rootHelperInstallProcess.command = [
-      "pkexec", "/usr/bin/install", "-D", "-o", "root", "-g", "root", "-m", "700",
-      rootHelperSourcePath, rootHelperPath
+      "pkexec", "/usr/bin/python3", "-c", rootHelperInstallerScript,
+      rootHelperSourcePath, rootHelperPath, rootHelperSha256
     ]
     rootHelperInstallProcess.running = true
   }
@@ -978,7 +1072,7 @@ Panel {
 
   Process {
     id: rootHelperCheckProcess
-    command: ["test", "-e", root.rootHelperPath]
+    command: [root.scriptPath, "helper-installed", root.rootHelperSha256]
     onExited: function(exitCode) { root.rootHelperInstalled = exitCode === 0 }
   }
 

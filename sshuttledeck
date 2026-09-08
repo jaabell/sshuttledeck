@@ -73,6 +73,17 @@ public_ip() {
   curl --fail --silent --show-error --max-time 5 https://ipwho.is/
 }
 
+helper_installed() {
+  local expected="$1" helper="/usr/local/libexec/sshuttledeck-root" marker="${helper}.sha256" actual mode
+  [[ "$expected" =~ ^[0-9a-f]{64}$ && -f "$helper" && ! -L "$helper" && -f "$marker" && ! -L "$marker" ]] || return 1
+  [[ "$(stat -c %u "$helper")" == "0" && "$(stat -c %a "$helper")" == "700" ]] || return 1
+  [[ "$(stat -c %u "$marker")" == "0" ]] || return 1
+  mode="$(stat -c %a "$marker")"
+  (( (8#$mode & 022) == 0 )) || return 1
+  IFS= read -r actual < "$marker" || return 1
+  [[ "$actual" == "$expected" ]]
+}
+
 status() {
   local pid target="" command="" started="" link_start="" elapsed=""
   local active_pidfile="$pidfile" active_metafile="$metafile" active_startfile="$startfile" active_linkstartfile="$linkstartfile"
@@ -156,5 +167,9 @@ case "${1:-}" in
     ;;
   link-stats) link_stats ;;
   public-ip) public_ip ;;
-  *) die "Usage: sshuttledeck {hosts|link-stats|public-ip|resolve|status}" ;;
+  helper-installed)
+    [[ $# -eq 2 ]] || die "Invalid helper verification request."
+    helper_installed "$2"
+    ;;
+  *) die "Usage: sshuttledeck {helper-installed|hosts|link-stats|public-ip|resolve|status}" ;;
 esac

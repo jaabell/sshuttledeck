@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "jaabell.sshuttledeck",
   "name": "SSHuttleDeck",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "jaabell",
   "license": "MIT",
   "description": "An SSHuttle SSH VPN tunnel launcher for SSH config aliases, Tailscale machines, and custom endpoints.",
