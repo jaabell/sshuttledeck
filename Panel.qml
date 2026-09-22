@@ -192,7 +192,7 @@ Panel {
     "    if 'staged_fd' in locals() and staged_fd >= 0: os.close(staged_fd)",
     "    if 'marker_fd' in locals() and marker_fd >= 0: os.close(marker_fd)",
     "print('SSHuttleDeck secure root helper installed.')"
-  ].join("\\n")
+  ].join("\n")
   readonly property bool connected: state === "Connected"
   readonly property var currentPhrases: connected ? activePhrases : inactivePhrases
   readonly property string heroPhraseText: currentPhrases[phraseIndex % currentPhrases.length]
