@@ -44,6 +44,10 @@ administrator password. This copies only the release-pinned
 `sshuttledeck-root` to `/usr/local/libexec/sshuttledeck-root`; no tunnel starts
 during setup.
 
+This is the expected setup screen before the helper is installed:
+
+![SSHuttleDeck security setup screen](assets/security-setup.png)
+
 Authenticate with the selected host in a terminal once before using it here,
 so its host key is trusted. SSHuttleDeck uses a private key under `~/.ssh`
 with no interactive passphrase; hosts requiring a remote password, agent-only
