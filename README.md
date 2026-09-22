@@ -46,7 +46,7 @@ during setup.
 
 This is the expected setup screen before the helper is installed:
 
-![SSHuttleDeck security setup screen](assets/security-setup.png)
+![SSHuttleDeck security setup screen](assets/helper-screen.png)
 
 Authenticate with the selected host in a terminal once before using it here,
 so its host key is trusted. SSHuttleDeck uses a private key under `~/.ssh`
