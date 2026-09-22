@@ -648,8 +648,34 @@ Panel {
             }
             trailingControl: Component {
               Button {
-                text: root.connected ? "Disconnect" : "Refresh"
+                id: tunnelAction
+                readonly property bool destructive: root.connected
+                text: destructive ? (disconnectProcess.running ? "Disconnecting..." : "Disconnect") : "Refresh"
+                enabled: !disconnectProcess.running
+                leftPadding: Style.space(10)
+                rightPadding: Style.space(10)
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                font.bold: destructive
                 onClicked: root.connected ? root.disconnect() : root.refresh()
+
+                background: Rectangle {
+                  radius: Style.cornerRadius
+                  color: tunnelAction.destructive
+                    ? (tunnelAction.down ? "#991b1b" : tunnelAction.hovered ? "#dc2626" : "#b91c1c")
+                    : (tunnelAction.down ? "#202936" : tunnelAction.hovered ? "#3b4757" : "#303946")
+                  border.width: 1
+                  border.color: tunnelAction.destructive ? "#fca5a5" : "#596575"
+                  opacity: tunnelAction.enabled ? 1 : 0.6
+                }
+
+                contentItem: Text {
+                  text: tunnelAction.text
+                  color: tunnelAction.destructive ? "#fff1f2" : root.foreground
+                  font: tunnelAction.font
+                  horizontalAlignment: Text.AlignHCenter
+                  verticalAlignment: Text.AlignVCenter
+                }
               }
             }
           }
